@@ -2,7 +2,7 @@
 
 Play **World of Warcraft: Forever** on Snapdragon Android handhelds as a normal Android app. You tap the icon, press Play, and the game runs.
 
-This uses Blizzard's own **Windows ARM64** WoW client, so the game itself runs natively on the phone's CPU. Wine translates the Windows calls, and DXVK plus a patched Turnip Vulkan driver render the game on the Adreno GPU. Nothing is emulated as x86.
+This uses Blizzard's own **Windows ARM64** WoW client, so the game itself runs natively on the phone's CPU. Wine translates the Windows calls, and DXVK plus a patched Turnip Vulkan driver render the game on the Adreno GPU. Nothing is emulated as x86. Non-Adreno GPUs such as MediaTek's Mali have experimental support through the phone's own Vulkan driver.
 
 > Unofficial community project. Not affiliated with or endorsed by Blizzard Entertainment. You need your own Battle.net account with WoW Forever access. This repo and its releases contain **no** Blizzard game files.
 
@@ -20,10 +20,12 @@ This uses Blizzard's own **Windows ARM64** WoW client, so the game itself runs n
 | RedMagic 11 Pro (Snapdragon 8 Elite / Adreno 840) | Tested in-world by arusiasotto |
 | Poco F7 (Snapdragon 8s Gen 4 / Adreno 825) | Tested by gusebus |
 | Samsung Galaxy S23/S24/S25 / Z Fold series | Supported (with automatic Samsung UBWC optimization) |
+| Oppo Find X9 Pro (Dimensity 9500 / Mali G1-Ultra) | Experimental. Tested in-world by TLT-ghost using the system Vulkan driver |
 
 Requirements:
 
 - Snapdragon 8 series (Adreno 7xx or Adreno 8xx). The app bundles both the Adreno 740 driver and the Turnip v32 driver for Snapdragon 8 Elite / Adreno 8xx, automatically detecting the GPU and applying the optimal driver and environment flags.
+- Non-Adreno GPUs (experimental): the app uses the phone's own Vulkan driver through GameNative's non-Adreno wrapper. Only the Dimensity 9500 has been tested; other recent Dimensity flagships will likely work. The first launch downloads the wrapper, so it needs an internet connection.
 - Android 10 or newer, 64-bit.
 - About **60 GB** free for the game data (internal storage or SD card), plus about 4 GB of internal storage for the app and its Windows environment.
 - Wi-Fi. A computer is optional: it only speeds up the first install by copying the game data over instead of streaming it.
@@ -35,6 +37,8 @@ Requirements:
 ### 1. Install the app
 
 Download `WoW-Forever.apk` from the [latest release](https://github.com/jaredgei/wow-forever-android/releases/latest) and install it on your device. The app's package name is `app.wowforever`, so it can sit alongside GameNative or Winlator.
+
+Releases from v2.4.5 on have a build provenance attestation: a signed record that this repository's release workflow built that exact file, and from which commit. To check a download, run `gh attestation verify WoW-Forever.apk --repo jaredgei/wow-forever-android` with the [GitHub CLI](https://cli.github.com).
 
 ### 2. Install the game
 
@@ -84,7 +88,7 @@ Once your game files and Battle.net credentials are configured, the app automati
 - **Setup screen:** to access folder settings, forget credentials, check environment status, or view updates, hold **Start + Select + L2 + R2** (or tap the back button) during the loading splash to cancel boot and return to the setup screen.
 - The app creates a basic `WTF/Config.wtf` on first run and always sets `gxApi "D3D11"`, the renderer that works with DXVK.
 - **Region:** tap **Region** on the setup screen to choose Americas, Europe, Korea or Taiwan. The game logs straight into that region without showing its region picker. New installs default to a guess based on the phone's country. The game is also installed and updated to the build that region's realms run, which can differ between regions right after a patch.
-- **Resolution:** tap **Resolution** on the setup screen to choose 720p, 900p or 1080p. Adreno 740 devices default to 1080p and Adreno 8xx devices to 720p, which runs much smoother there. The game's resolution is set from this on every launch and reshaped to fit non-16:9 screens.
+- **Resolution:** tap **Resolution** on the setup screen to choose 720p, 900p or 1080p. Adreno 740 devices default to 1080p, and Adreno 8xx and non-Adreno devices to 720p, which runs much smoother there. The game's resolution is set from this on every launch and reshaped to fit non-16:9 screens.
 - **Add-ons:** download an add-on's `.zip` on your device, then tap **Add-on** on the setup screen and pick it. It's installed into `_forever_/Interface/AddOns`, replacing any older copy. You can also copy add-on folders there yourself.
 
 ### Controls and signing in
@@ -92,7 +96,8 @@ Once your game files and Battle.net credentials are configured, the app automati
 - **Controller:** built-in handheld controllers work in-game. WoW's own gamepad mode handles the mapping.
 - **In-game menu:** press Back (the button or the back swipe gesture) to open the sidebar. It has **Keyboard**, on-screen controls, performance overlay and **Exit**.
 - **Keyboard:** the sidebar's **Keyboard** opens the Android keyboard. On dual-screen devices like the Thor it appears on the bottom screen. Symbols like `@` work, and so does pasting.
-- **Battle.net Auto-Login:** configure credentials directly on the launcher setup screen (**Login**). Credentials are saved encrypted on-device via Android Keystore. On boot, the launcher generates `_forever_/login.txt`, which the WoW client automatically reads on startup to sign in natively without macro simulation or synthetic clicks. Use **Forget Login** on the launcher setup screen to clear credentials and remove the login file.
+- **Battle.net Auto-Login:** configure credentials directly on the launcher setup screen (**Password login**). Credentials are saved encrypted on-device via Android Keystore. On boot, the launcher generates `_forever_/login.txt`, which the WoW client automatically reads on startup to sign in natively without macro simulation or synthetic clicks. Use **Forget Login** on the launcher setup screen to clear credentials and remove the login file.
+- **Experimental browser login:** for accounts that keep getting BLZ51914400 with the saved login. Turn **Browser login** on in the launcher and press **Play**: Battle.net's own sign-in page opens, where you can confirm the device, and the game then starts with a one-time session from Battle.net instead of your password, the way the Battle.net app starts it. Turn it off to go back to the saved login. Details and the device-test checklist are in [tools/wow-session-bridge](tools/wow-session-bridge/ANDROID_TESTING.md).
   - Authenticator codes still have to be entered by hand. The game keeps running when you switch apps, so you can grab a code from an authenticator app on the same device.
   - Each install shows Battle.net its own Windows PC identity (machine ID and a `DESKTOP-XXXXXXX` computer name), generated once and kept across updates. Reinstalling the app creates a new one, so Battle.net may treat it as a new device.
 
@@ -170,6 +175,7 @@ GameNative is a general game library with Steam, GOG, Epic, Amazon, EA and Rocks
 - **Keyboard fixes:** GameNative's on-screen keyboard dropped shifted symbols (`@` came through as `2`), because it sent key codes without the character or the Shift key. The fix is in `Keyboard.java` and `IMEInputReceiver.kt`. The keyboard now always goes through the IME receiver, so it appears on the Thor's bottom screen.
 - **Battle.net auto-login:** native `login.txt` client authentication managed via Keystore-encrypted credentials (`ui/screen/wow/BattleNetSignIn.kt`). Eliminates coordinate-based typing macros in favor of the game client's built-in startup authentication, with configuration available directly from the launcher setup screen.
 - **Native In-App Game Updater (v2.0):** Live version check against Blizzard patch services, direct-from-CDN ARM64 binary and manifest downloads, CASC index synchronization, and atomic `.build.info` updates on-device over Wi-Fi without any PC dependency.
+- **Non-Adreno (Mali) support, experimental:** non-Adreno GPUs use the system Vulkan driver through GameNative's `Wrapper-gamenative` build instead of Turnip, with `VK_EXT_graphics_pipeline_library` hidden, reported video memory capped at 4 GB and BCn textures decoded on the CPU.
 - **Lean runtime & startup:** eliminated continuous background accelerometer polling during gameplay in favor of native OS window management, removed cold-boot bitmap allocations, guarded background performance metric collection loops, and switched DNS to native platform resolution.
 - **Removed:** every store backend (Steam and JavaSteam, GOG, Epic, Amazon, EA, Rockstar), library, login, settings, custom game scanner, and downloads screens, ExoPlayer and browser dependencies, `DownloadService`, `ContainerMigrator`, Nexus mod management, the Meta Quest/XR build, PostHog analytics, Play Integrity, the self-updater, the Room database, the notification prompt, extra bundled Box64/FEX/DXVK versions and the legacy (Android 9) build. That's roughly 135k lines of code and about half the APK size.
 - **Tooling:** `tools/download_wow_arm64.py` fetches the ARM64 client from Blizzard's CDN, `tools/sync_wow_to_device.sh` handles updates, and `tools/fetch_components.sh` downloads the runtime archives.

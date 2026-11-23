@@ -1,5 +1,7 @@
 package app.gamenative.ui.screen.xserver
 
+import app.gamenative.ui.screen.wow.auth.BattleNetBrowserLogin
+
 import android.app.Activity
 import android.content.Context
 import android.graphics.Color
@@ -105,6 +107,7 @@ import app.gamenative.ui.component.parsePositiveFpsLimit
 import app.gamenative.ui.data.PerformanceHudConfig
 import app.gamenative.ui.data.PerformanceHudSize
 import app.gamenative.ui.data.XServerState
+import app.gamenative.GameSessionService
 import app.gamenative.ui.screen.wow.WowMachineIdentity
 import app.gamenative.ui.widget.PerformanceHudView
 import app.gamenative.utils.AssetUtils
@@ -1476,9 +1479,11 @@ fun XServerScreen(
         exit(xServerView!!.getxServer().winHandler, frameRating, container, appId, onExit, navigateBack, "activity_destroyed")
     }
     val onKeyEvent: (AndroidEvent.KeyEvent) -> Boolean = {
-        val isKeyboard = Keyboard.isKeyboardDevice(it.event.device)
-        val isPhysicalKeyboard = isKeyboard && it.event.device?.isVirtual != true
         val isGamepad = ExternalController.isGameController(it.event.device)
+        // Keys from an external non-keyboard device (an MMO mouse's side buttons, #99) go to the game as keys too.
+        val isKeyboard = Keyboard.isKeyboardDevice(it.event.device) ||
+            (!isGamepad && Keyboard.isExternalKeySource(it.event.device))
+        val isPhysicalKeyboard = isKeyboard && it.event.device?.isVirtual != true
         val waitingForManualResume =
             manualResumeMode &&
                 PluviaApp.isOverlayPaused &&
@@ -2236,6 +2241,7 @@ fun XServerScreen(
                                 onGameLaunchError,
                                 isOffline,
                             )
+                            GameSessionService.ensureStarted(context.applicationContext)
 
                             if (!PluviaApp.isActivityInForeground && !neverSuspend) {
                                 PluviaApp.xEnvironment?.onPause()
@@ -3654,9 +3660,15 @@ private fun setupXEnvironment(
         val wow64Mode = container.isWoW64Mode
         guestProgramLauncherComponent.setContainer(container)
         guestProgramLauncherComponent.setWineInfo(xServerState.value.wineInfo)
-        val gameExecutable = "wine explorer /desktop=shell," + xServer.screenInfo + " " +
-            getWineStartCommand(context, appId, container, envVars, guestProgramLauncherComponent) +
+        val directCommand = getWineStartCommand(context, appId, container, envVars, guestProgramLauncherComponent) +
             (if (container.execArgs.isNotEmpty()) " " + container.execArgs else "")
+        val browserLogin = if (BattleNetBrowserLogin.enabled(context)) {
+            BattleNetBrowserLogin.start(context, container)
+        } else {
+            null
+        }
+        val launchCommand = browserLogin?.command ?: directCommand
+        val gameExecutable = "wine explorer /desktop=shell," + xServer.screenInfo + " " + launchCommand
         guestProgramLauncherComponent.guestExecutable = gameExecutable
         guestProgramLauncherComponent.isWoW64Mode = wow64Mode
         // Set steam type for selecting appropriate box64rc
@@ -3779,6 +3791,8 @@ private fun setupXEnvironment(
     guestProgramLauncherComponent.envVars = EnvVars().apply { putAll(envVars) }
 
     val gameTerminationCallback = Callback<Int> { status ->
+        // Record the status for this launch before error handling or screen cleanup cancels sign-in.
+        browserLogin?.onExit?.invoke(status)
         if (status != 0) {
             Timber.e("Guest program terminated with status: $status")
             onGameLaunchError?.invoke("Game terminated with error status: $status")
@@ -3818,6 +3832,7 @@ private fun setupXEnvironment(
     try {
         environment.startEnvironmentComponents()
     } catch (e: Exception) {
+        BattleNetBrowserLogin.cancel()
         Timber.e(e, "Failed to start environment components, cleaning up")
         try {
             environment.stopEnvironmentComponents()

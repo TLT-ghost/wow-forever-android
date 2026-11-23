@@ -276,8 +276,34 @@ public class XServer {
     }
 
     public void injectKeyPress(XKeycode xKeycode, int keysym) {
+        injectKeyPress(xKeycode, keysym, true);
+    }
+
+    public void injectKeyPress(XKeycode xKeycode, int keysym, boolean autoRepeat) {
         try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
-            keyboard.setKeyPress(xKeycode.getId(), keysym);
+            keyboard.setKeyPress(xKeycode.getId(), keysym, autoRepeat);
+        }
+    }
+
+    /** As injectKeyPress, telling X what the key types without (keysym) and with Shift (shiftedKeysym). */
+    public void injectKeyPress(XKeycode xKeycode, int keysym, int shiftedKeysym, boolean autoRepeat) {
+        try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
+            keyboard.setKeyPress(xKeycode.getId(), keysym, shiftedKeysym, autoRepeat);
+        }
+    }
+
+    /**
+     * Types one character that no key on the US layout produces, such as Cyrillic from the on-screen keyboard (#43). It
+     * goes through a keycode that no physical key uses, so the real keys keep their keysyms and Wine keeps their virtual
+     * keys (WASD and keybinds don't change).
+     */
+    public static final byte TEXT_KEYCODE = 93;
+
+    public void injectTextCharacter(int codePoint) {
+        int keysym = Keyboard.unicodeKeysym(codePoint);
+        try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
+            keyboard.setKeyPress(TEXT_KEYCODE, keysym, false);
+            keyboard.setKeyRelease(TEXT_KEYCODE);
         }
     }
 

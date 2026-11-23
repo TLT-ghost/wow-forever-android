@@ -1,8 +1,10 @@
 package app.gamenative.ui.screen.wow
 
 import android.content.Context
+import app.gamenative.ui.screen.wow.auth.BattleNetBrowserLogin
 import android.os.Build
 import android.os.Environment
+import android.os.SystemClock
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -103,6 +105,7 @@ fun WoWForeverScreen(
     var isLaunching by remember { mutableStateOf(false) }
     var launchJob by remember { mutableStateOf<Job?>(null) }
     var hasSavedLogin by remember { mutableStateOf(BattleNetSignIn.load(context) != null) }
+    var browserLogin by remember { mutableStateOf(BattleNetBrowserLogin.enabled(context)) }
     var region by remember(gamePath, files) { mutableStateOf(GameRegion.current(context, gamePath)) }
     var resolution by remember { mutableStateOf(RenderResolution.current(context, gpu.screenSize)) }
     var showLoginDialog by remember { mutableStateOf(false) }
@@ -513,6 +516,17 @@ fun WoWForeverScreen(
                         }
                     }
 
+                    longUptimeDays()?.let { days ->
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "Your device has been on for $days days. After about 49 days WoW's clock stops, " +
+                                "so the login screen stays blank and nothing loads. Restart your device before playing.",
+                            fontSize = 12.sp,
+                            color = WowError,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+
                     errorMessage?.let {
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(text = "Error: $it", fontSize = 12.sp, color = WowError, fontWeight = FontWeight.Medium)
@@ -696,18 +710,39 @@ fun WoWForeverScreen(
                             }
                         }
                         LinkButton(
-                            text = "Login",
+                            text = "Password login",
                             icon = Icons.Default.Key,
                         ) {
                             showLoginDialog = true
                         }
-                        if (hasSavedLogin) {
+                        LinkButton(
+                            text = if (browserLogin) "Browser login: On (experimental)" else "Browser login: Off",
+                            icon = Icons.Default.Key,
+                        ) {
+                            browserLogin = !browserLogin
+                            BattleNetBrowserLogin.setEnabled(context, browserLogin)
+                        }
+                        // With browser login on, this also signs out of the Battle.net page so another account
+                        // can sign in next time.
+                        if (hasSavedLogin || browserLogin) {
                             LinkButton("Forget Login", Icons.Default.Delete) {
                                 BattleNetSignIn.forget(context)
                                 BattleNetSignIn.removeLoginFile(File(gamePath))
+                                BattleNetBrowserLogin.signOut()
                                 hasSavedLogin = false
+                                if (browserLogin) SnackbarManager.show("Signed out of Battle.net. The next launch asks you to sign in.")
                             }
                         }
+                    }
+                    // Browser login never uses the saved password, but it stays stored until the user removes it (#97).
+                    if (browserLogin && hasSavedLogin) {
+                        Text(
+                            text = "Browser login doesn't use your saved password, which stays on this device until you tap Forget Login.",
+                            fontSize = 11.sp,
+                            color = WowSubtle,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
                     }
                 }
             }
@@ -922,6 +957,16 @@ fun WoWForeverScreen(
 }
 
 private fun prefs(context: Context) = context.getSharedPreferences("wow_forever", Context.MODE_PRIVATE)
+
+/**
+ * Wine's tick count follows the device's uptime, and once it passes 2^32 ms (about 49.7 days) WoW's frame time stops
+ * advancing: the login UI never fades in and auto-login never starts (#36). A restart fixes it, so the launcher says so.
+ */
+internal fun longUptimeDays(uptimeMs: Long = SystemClock.elapsedRealtime()): Long? =
+    if (uptimeMs >= UPTIME_WARNING_MS) uptimeMs / 86_400_000L else null
+
+// A little under 2^32 ms, so the warning shows before the clock stops rather than after.
+private const val UPTIME_WARNING_MS = 48L * 86_400_000L
 
 /**
  * The Battle.net region WoW logs into. Without the Battle.net app to pick one, WoW stops at a region picker before
@@ -1155,12 +1200,17 @@ private fun Throwable.isPermissionDenied() =
 
 private const val DEFAULT_DRIVER = "Turnip-WoW-scheduler-test"
 private const val ADRENO_8XX_DRIVER = "Turnip-V32-RP6sched"
+private const val SYSTEM_DRIVER = "System"
 private const val PROTON_VERSION = "proton-11.0-90624-arm64ec"
 private const val DXVK_VERSION = "2.4.1-wow-aarch64-test"
 
 private data class GpuProfile(val driver: String, val tuDebug: String, val screenSize: String, val label: String, val edition: String) {
     companion object {
-        fun detect(context: Context) = if (isAdreno8xxDevice(context)) {
+        fun detect(context: Context) = if (!GPUInformation.isAdrenoGPU(context)) {
+            // Non-Adreno (Mali / Immortalis / Arm G1, e.g. Dimensity 9500): Turnip can't run here,
+            // so fall back to the phone's own Vulkan driver.
+            GpuProfile(SYSTEM_DRIVER, "", "1280x720", "Mali (system driver)", "MediaTek / Mali - experimental")
+        } else if (isAdreno8xxDevice(context)) {
             GpuProfile(ADRENO_8XX_DRIVER, "noconform,sysmem", "1280x720", "Adreno 8xx", "Snapdragon 8 Elite / Adreno 8xx")
         } else {
             GpuProfile(DEFAULT_DRIVER, "noconform", "1920x1080", "Adreno 740", "Snapdragon 8 Series / Adreno 740")
@@ -1234,27 +1284,49 @@ private fun prepareLaunch(context: Context, gameRoot: File, gpu: GpuProfile, scr
     }
     check(containerManager.hasContainer(CONTAINER_ID)) { "Container creation failed. Check system storage and logs." }
     // Written last, so the password isn't on disk during the client download or container setup.
-    BattleNetSignIn.load(context)?.let { login ->
-        BattleNetSignIn.writeLoginFile(gameRoot, login)
-        BattleNetSignIn.startLoginWatcher(gameRoot)
+    if (BattleNetBrowserLogin.enabled(context)) {
+        // Even an empty login.txt can select the password path instead of the launcher session.
+        BattleNetSignIn.removeLoginFile(gameRoot)
+    } else {
+        BattleNetSignIn.load(context)?.let { login ->
+            BattleNetSignIn.writeLoginFile(gameRoot, login)
+            BattleNetSignIn.startLoginWatcher(gameRoot)
+        }
     }
     return CONTAINER_ID
 }
 
 private fun containerConfig(gameRoot: File, gpu: GpuProfile, screenSize: String, identity: WowMachineIdentity): JSONObject {
     val samsungEnv = if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) " FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1" else ""
-    val envVars = "WRAPPER_MAX_IMAGE_COUNT=0 ZINK_DESCRIPTORS=lazy ZINK_DEBUG=compact,deck_emu MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=512MB mesa_glthread=true WINEESYNC=0 MESA_VK_WSI_PRESENT_MODE=mailbox TU_DEBUG=${gpu.tuDebug} VKD3D_SHADER_MODEL=6_0 PULSE_LATENCY_MSEC=144 ${WowMachineIdentity.HOSTNAME_ENV}=${identity.computerName}$samsungEnv"
+    // Mali: stop the wrapper rewriting SPIR-V composite constants. The stock Mali driver handles them
+    // directly, and the rewrite caused a Wine assertion during WoW shader creation on some Mali GPUs
+    // (found by saaxaa in https://github.com/saaxaa/wow-forever-android-mali).
+    val maliEnv = if (gpu.driver == SYSTEM_DRIVER) " WRAPPER_NO_PATCH_OPCONSTCOMP=1" else ""
+    val envVars = "WRAPPER_MAX_IMAGE_COUNT=0 ZINK_DESCRIPTORS=lazy ZINK_DEBUG=compact,deck_emu MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=512MB mesa_glthread=true WINEESYNC=0 MESA_VK_WSI_PRESENT_MODE=mailbox TU_DEBUG=${gpu.tuDebug} VKD3D_SHADER_MODEL=6_0 PULSE_LATENCY_MSEC=144 ${WowMachineIdentity.HOSTNAME_ENV}=${identity.computerName}$samsungEnv$maliEnv"
     return JSONObject().apply {
         put("id", CONTAINER_ID)
         put("name", "WoW Forever")
         put("screenSize", screenSize)
         put("envVars", envVars)
-        put("graphicsDriver", "Wrapper")
+        // GameNative uses its own wrapper build for non-Adreno GPUs (Mali, Xclipse); the plain
+        // "Wrapper" is the Adreno build (BC texture views fail with it on Mali).
+        put("graphicsDriver", if (gpu.driver == SYSTEM_DRIVER) "Wrapper-gamenative" else "Wrapper")
         put("graphicsDriverVersion", gpu.driver)
-        put("graphicsDriverConfig", "version=${gpu.driver},adrenotoolsTurnip=1,resourceType=buffer,bcnEmulation=auto,quality=high")
+        put(
+            "graphicsDriverConfig",
+            if (gpu.driver == SYSTEM_DRIVER) {
+                // Mali / other non-Adreno GPUs (tested on Dimensity 9500 / Mali G1-Ultra):
+                // - VK_EXT_graphics_pipeline_library hidden: pipeline creation failed with it.
+                // - maxDeviceMemory=4096: otherwise ~15 GB is reported and the game can exhaust RAM.
+                // - bcnEmulationType=software: the compute BCn decoder produced corrupted textures.
+                "version=${gpu.driver},adrenotoolsTurnip=0,vulkanVersion=1.3,presentMode=mailbox,disablePresentWait=0,syncFrame=0,resourceType=auto,bcnEmulation=auto,bcnEmulationType=software,bcnEmulationCache=0,maxDeviceMemory=4096,blacklistedExtensions=VK_EXT_graphics_pipeline_library,quality=high"
+            } else {
+                "version=${gpu.driver},adrenotoolsTurnip=1,resourceType=buffer,bcnEmulation=auto,quality=high"
+            },
+        )
         put("displayRenderer", "vulkan")
         put("dxwrapper", "dxvk-$DXVK_VERSION-1")
-        put("dxwrapperConfig", "version=$DXVK_VERSION-1")
+        put("dxwrapperConfig", if (gpu.driver == SYSTEM_DRIVER) "version=$DXVK_VERSION-1,maxDeviceMemory=4096" else "version=$DXVK_VERSION-1")
         put("wineVersion", "$PROTON_VERSION-1")
         put("containerVariant", "bionic")
         put("fexcoreVersion", "2609-0")
