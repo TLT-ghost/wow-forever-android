@@ -43,6 +43,15 @@ class AppUpdaterTest {
     }
 
     @Test
+    fun isNewer_maliBuildNumber_comparesCorrectly() {
+        assertTrue(AppUpdater.isNewer("v2.4.6-mali3", "2.4.6-mali2"))
+        assertFalse(AppUpdater.isNewer("v2.4.6-mali2", "2.4.6-mali2"))
+        assertFalse(AppUpdater.isNewer("v2.4.6-mali1", "2.4.6-mali2"))
+        assertTrue(AppUpdater.isNewer("v2.4.7-mali1", "2.4.6-mali2"))
+        assertFalse(AppUpdater.isNewer("v2.4.5-mali9", "2.4.6-mali2"))
+    }
+
+    @Test
     fun isNewer_handlesPrereleaseSuffix() {
         assertFalse(AppUpdater.isNewer("v2.1.2-beta1", "2.1.2"))
         assertTrue(AppUpdater.isNewer("v2.1.3-rc1", "2.1.2"))

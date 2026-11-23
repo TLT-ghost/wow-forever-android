@@ -14,7 +14,7 @@ import org.json.JSONObject
 import timber.log.Timber
 
 object AppUpdater {
-    private const val RELEASES_URL = "https://api.github.com/repos/jaredgei/wow-forever-android/releases/latest"
+    private const val RELEASES_URL = "https://api.github.com/repos/TLT-ghost/wow-forever-android/releases/latest"
 
     data class Release(
         val version: String,
@@ -25,11 +25,13 @@ object AppUpdater {
     )
 
     fun isNewer(latest: String, current: String = BuildConfig.VERSION_NAME): Boolean {
+        // Mali fork builds are tagged like v2.4.6-mali2; the mali number counts as a fourth
+        // version part so a new Mali build of the same upstream version is still offered.
         val parse = { v: String ->
-            v.trimStart('v', 'V')
-                .split('-', '_', '+')[0]
-                .split('.')
-                .mapNotNull { it.toIntOrNull() }
+            val t = v.trimStart('v', 'V')
+            val base = t.split('-', '_', '+')[0].split('.').mapNotNull { it.toIntOrNull() }.toMutableList()
+            while (base.size < 3) base.add(0)
+            base + (Regex("mali(\\d+)", RegexOption.IGNORE_CASE).find(t)?.groupValues?.get(1)?.toIntOrNull() ?: 0)
         }
         val l = parse(latest)
         val c = parse(current)
