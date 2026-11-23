@@ -1200,12 +1200,17 @@ private fun Throwable.isPermissionDenied() =
 
 private const val DEFAULT_DRIVER = "Turnip-WoW-scheduler-test"
 private const val ADRENO_8XX_DRIVER = "Turnip-V32-RP6sched"
+private const val SYSTEM_DRIVER = "System"
 private const val PROTON_VERSION = "proton-11.0-90624-arm64ec"
 private const val DXVK_VERSION = "2.4.1-wow-aarch64-test"
 
 private data class GpuProfile(val driver: String, val tuDebug: String, val screenSize: String, val label: String, val edition: String) {
     companion object {
-        fun detect(context: Context) = if (isAdreno8xxDevice(context)) {
+        fun detect(context: Context) = if (!GPUInformation.isAdrenoGPU(context)) {
+            // Non-Adreno (Mali / Immortalis / Arm G1, e.g. Dimensity 9500): Turnip can't run here,
+            // so fall back to the phone's own Vulkan driver.
+            GpuProfile(SYSTEM_DRIVER, "", "1280x720", "Mali (system driver)", "MediaTek / Mali - experimental")
+        } else if (isAdreno8xxDevice(context)) {
             GpuProfile(ADRENO_8XX_DRIVER, "noconform,sysmem", "1280x720", "Adreno 8xx", "Snapdragon 8 Elite / Adreno 8xx")
         } else {
             GpuProfile(DEFAULT_DRIVER, "noconform", "1920x1080", "Adreno 740", "Snapdragon 8 Series / Adreno 740")
@@ -1293,18 +1298,35 @@ private fun prepareLaunch(context: Context, gameRoot: File, gpu: GpuProfile, scr
 
 private fun containerConfig(gameRoot: File, gpu: GpuProfile, screenSize: String, identity: WowMachineIdentity): JSONObject {
     val samsungEnv = if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) " FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1" else ""
-    val envVars = "WRAPPER_MAX_IMAGE_COUNT=0 ZINK_DESCRIPTORS=lazy ZINK_DEBUG=compact,deck_emu MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=512MB mesa_glthread=true WINEESYNC=0 MESA_VK_WSI_PRESENT_MODE=mailbox TU_DEBUG=${gpu.tuDebug} VKD3D_SHADER_MODEL=6_0 PULSE_LATENCY_MSEC=144 ${WowMachineIdentity.HOSTNAME_ENV}=${identity.computerName}$samsungEnv"
+    // Mali: stop the wrapper rewriting SPIR-V composite constants. The stock Mali driver handles them
+    // directly, and the rewrite caused a Wine assertion during WoW shader creation on some Mali GPUs
+    // (found by saaxaa in https://github.com/saaxaa/wow-forever-android-mali).
+    val maliEnv = if (gpu.driver == SYSTEM_DRIVER) " WRAPPER_NO_PATCH_OPCONSTCOMP=1" else ""
+    val envVars = "WRAPPER_MAX_IMAGE_COUNT=0 ZINK_DESCRIPTORS=lazy ZINK_DEBUG=compact,deck_emu MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=512MB mesa_glthread=true WINEESYNC=0 MESA_VK_WSI_PRESENT_MODE=mailbox TU_DEBUG=${gpu.tuDebug} VKD3D_SHADER_MODEL=6_0 PULSE_LATENCY_MSEC=144 ${WowMachineIdentity.HOSTNAME_ENV}=${identity.computerName}$samsungEnv$maliEnv"
     return JSONObject().apply {
         put("id", CONTAINER_ID)
         put("name", "WoW Forever")
         put("screenSize", screenSize)
         put("envVars", envVars)
-        put("graphicsDriver", "Wrapper")
+        // GameNative uses its own wrapper build for non-Adreno GPUs (Mali, Xclipse); the plain
+        // "Wrapper" is the Adreno build (BC texture views fail with it on Mali).
+        put("graphicsDriver", if (gpu.driver == SYSTEM_DRIVER) "Wrapper-gamenative" else "Wrapper")
         put("graphicsDriverVersion", gpu.driver)
-        put("graphicsDriverConfig", "version=${gpu.driver},adrenotoolsTurnip=1,resourceType=buffer,bcnEmulation=auto,quality=high")
+        put(
+            "graphicsDriverConfig",
+            if (gpu.driver == SYSTEM_DRIVER) {
+                // Mali / other non-Adreno GPUs (tested on Dimensity 9500 / Mali G1-Ultra):
+                // - VK_EXT_graphics_pipeline_library hidden: pipeline creation failed with it.
+                // - maxDeviceMemory=4096: otherwise ~15 GB is reported and the game can exhaust RAM.
+                // - bcnEmulationType=software: the compute BCn decoder produced corrupted textures.
+                "version=${gpu.driver},adrenotoolsTurnip=0,vulkanVersion=1.3,presentMode=mailbox,disablePresentWait=0,syncFrame=0,resourceType=auto,bcnEmulation=auto,bcnEmulationType=software,bcnEmulationCache=0,maxDeviceMemory=4096,blacklistedExtensions=VK_EXT_graphics_pipeline_library,quality=high"
+            } else {
+                "version=${gpu.driver},adrenotoolsTurnip=1,resourceType=buffer,bcnEmulation=auto,quality=high"
+            },
+        )
         put("displayRenderer", "vulkan")
         put("dxwrapper", "dxvk-$DXVK_VERSION-1")
-        put("dxwrapperConfig", "version=$DXVK_VERSION-1")
+        put("dxwrapperConfig", if (gpu.driver == SYSTEM_DRIVER) "version=$DXVK_VERSION-1,maxDeviceMemory=4096" else "version=$DXVK_VERSION-1")
         put("wineVersion", "$PROTON_VERSION-1")
         put("containerVariant", "bionic")
         put("fexcoreVersion", "2609-0")
